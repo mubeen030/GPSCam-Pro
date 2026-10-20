@@ -1,4 +1,4 @@
-package com.example.gps_camera
+package com.mubeen.gpscampro
 
 import io.flutter.embedding.android.FlutterActivity
 

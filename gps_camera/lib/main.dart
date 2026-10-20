@@ -1,8 +1,13 @@
 import 'package:flutter/material.dart';
 import 'screens/camera_screen.dart';
 
-void main() {
+import 'services/ad_service.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(const GPSCameraApp());
+  // Initialize AdMob in background without blocking camera startup
+  AdService.initialize();
 }
 
 class GPSCameraApp extends StatelessWidget {

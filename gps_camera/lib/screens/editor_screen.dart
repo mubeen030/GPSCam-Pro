@@ -6,18 +6,19 @@ import 'package:screenshot/screenshot.dart';
 import 'package:gal/gal.dart';
 import 'package:share_plus/share_plus.dart'; 
 import 'package:path_provider/path_provider.dart';
+import '../widgets/ad_banner_widget.dart';
 import '../widgets/gps_overlay_card.dart';
 
 class EditorScreen extends StatefulWidget {
   final File imageFile;
-  final Position initialPosition;
+  final Position? initialPosition;
   final Placemark? initialAddress;
   final double aspectRatio;
 
   const EditorScreen({
     super.key,
     required this.imageFile,
-    required this.initialPosition,
+    this.initialPosition,
     this.initialAddress,
     required this.aspectRatio,
   });
@@ -44,13 +45,13 @@ class _EditorScreenState extends State<EditorScreen> {
       firstDate: DateTime(2000),
       lastDate: DateTime(2030),
     );
-    if (date == null) return;
+    if (date == null || !mounted) return;
 
     TimeOfDay? time = await showTimePicker(
       context: context,
       initialTime: TimeOfDay.fromDateTime(_displayDate),
     );
-    if (time == null) return;
+    if (time == null || !mounted) return;
 
     setState(() {
       _displayDate = DateTime(
@@ -79,26 +80,44 @@ class _EditorScreenState extends State<EditorScreen> {
   Future<void> _saveImage() async {
     if (_isLoading) return;
     setState(() => _isLoading = true);
-    final path = await _generateImage();
-    if (path != null) {
-      await Gal.putImage(path, album: "GPS Camera Pro");
+    try {
+      final path = await _generateImage();
+      if (path != null) {
+        await Gal.putImage(path, album: "GPS Camera Pro");
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("Saved to Gallery!"), backgroundColor: Colors.green),
+          );
+        }
+      }
+    } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Saved to Gallery!"), backgroundColor: Colors.green),
+          SnackBar(content: Text("Failed to save: $e"), backgroundColor: Colors.red),
         );
       }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
-    setState(() => _isLoading = false);
   }
 
   Future<void> _shareImage() async {
     if (_isLoading) return;
     setState(() => _isLoading = true);
-    final path = await _generateImage();
-    if (path != null) {
-      await Share.shareXFiles([XFile(path)], text: " captured with GPS Camera Pro");
+    try {
+      final path = await _generateImage();
+      if (path != null) {
+        await Share.shareXFiles([XFile(path)], text: " captured with GPS Camera Pro");
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Failed to share: $e"), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
-    setState(() => _isLoading = false);
   }
 
   @override
@@ -192,6 +211,7 @@ class _EditorScreenState extends State<EditorScreen> {
           ),
         ],
       ),
+      bottomNavigationBar: const SafeArea(child: AdBannerWidget()),
     );
   }
 }

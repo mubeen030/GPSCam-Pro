@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geocoding/geocoding.dart';
+import '../widgets/ad_banner_widget.dart';
 
 class LocationPickerScreen extends StatefulWidget {
   final double initialLat;
@@ -23,26 +24,34 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
   final TextEditingController _searchController = TextEditingController();
   bool _isSearching = false;
 
-  // --- GOOGLE MAPS LAYERS ---
+  // --- COMPLIANT OPEN MAP LAYERS ---
   int _currentLayerIndex = 0; 
   final List<Map<String, dynamic>> _mapLayers = [
     {
-      'name': 'Google Roads',
-      'url': 'https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', // Google Standard
-      'icon': Icons.satellite_alt, // Icon to switch TO Satellite
+      'name': 'Satellite',
+      'url': 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+      'icon': Icons.satellite_alt_rounded,
     },
     {
-      'name': 'Google Satellite',
-      'url': 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', // Google Hybrid
-      'icon': Icons.map, // Icon to switch TO Map
+      'name': 'Street Map',
+      'url': 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+      'icon': Icons.terrain,
+    },
+    {
+      'name': 'Voyager',
+      'url': 'https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
+      'icon': Icons.map,
     },
   ];
+
+  String _currentLocationName = "Resolving location...";
 
   @override
   void initState() {
     super.initState();
     _mapController = MapController();
     _selectedLocation = LatLng(widget.initialLat, widget.initialLng);
+    _fetchLocationName(widget.initialLat, widget.initialLng);
   }
 
   @override
@@ -50,6 +59,41 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
     _searchController.dispose();
     _mapController.dispose();
     super.dispose();
+  }
+
+  Future<void> _fetchLocationName(double lat, double lng) async {
+    try {
+      List<Placemark> placemarks = await placemarkFromCoordinates(lat, lng);
+      if (placemarks.isNotEmpty && mounted) {
+        final p = placemarks.first;
+        final parts = <String>[];
+        if (p.name != null && p.name!.trim().isNotEmpty) parts.add(p.name!.trim());
+        final streetParts = [p.subThoroughfare, p.thoroughfare]
+            .where((s) => s != null && s.trim().isNotEmpty)
+            .join(" ");
+        if (streetParts.isNotEmpty && !parts.contains(streetParts)) {
+          parts.add(streetParts);
+        }
+        if (p.subLocality != null && p.subLocality!.trim().isNotEmpty && !parts.contains(p.subLocality!.trim())) {
+          parts.add(p.subLocality!.trim());
+        }
+        if (p.locality != null && p.locality!.trim().isNotEmpty && !parts.contains(p.locality!.trim())) {
+          parts.add(p.locality!.trim());
+        }
+        if (p.administrativeArea != null && p.administrativeArea!.trim().isNotEmpty && !parts.contains(p.administrativeArea!.trim())) {
+          parts.add(p.administrativeArea!.trim());
+        }
+        setState(() {
+          _currentLocationName = parts.isNotEmpty ? parts.join(", ") : "${lat.toStringAsFixed(5)}°, ${lng.toStringAsFixed(5)}°";
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _currentLocationName = "${lat.toStringAsFixed(5)}°, ${lng.toStringAsFixed(5)}°";
+        });
+      }
+    }
   }
 
   Future<void> _performSearch() async {
@@ -77,26 +121,38 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
         }
       }
 
+      if (!mounted) return;
       if (target != null) {
-        setState(() => _selectedLocation = target!);
+        setState(() {
+          _selectedLocation = target!;
+          _currentLocationName = "Resolving location...";
+        });
         _mapController.move(target, 15.0);
+        _fetchLocationName(target.latitude, target.longitude);
       } else {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Location not found"), backgroundColor: Colors.red));
       }
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Search failed: $e"), backgroundColor: Colors.red));
     } finally {
-      setState(() => _isSearching = false);
+      if (mounted) {
+        setState(() => _isSearching = false);
+      }
     }
   }
 
   void _onTapMap(TapPosition _, LatLng point) {
-    setState(() => _selectedLocation = point);
+    setState(() {
+      _selectedLocation = point;
+      _currentLocationName = "Resolving location...";
+    });
+    _fetchLocationName(point.latitude, point.longitude);
   }
 
   void _toggleLayer() {
     setState(() {
-      _currentLayerIndex = _currentLayerIndex == 0 ? 1 : 0;
+      _currentLayerIndex = (_currentLayerIndex + 1) % _mapLayers.length;
     });
   }
 
@@ -126,7 +182,7 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
             children: [
               TileLayer(
                 urlTemplate: _mapLayers[_currentLayerIndex]['url'],
-                userAgentPackageName: 'com.example.gps_camera',
+                userAgentPackageName: 'com.mubeen.gpscampro',
               ),
               MarkerLayer(
                 markers: [
@@ -143,28 +199,36 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
 
           // Search Bar
           Positioned(
-            top: 16, left: 16, right: 16,
-            child: Card(
-              elevation: 6,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+            top: 14, left: 16, right: 16,
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(24),
+                boxShadow: const [
+                  BoxShadow(color: Colors.black26, blurRadius: 10, offset: Offset(0, 4)),
+                ],
+              ),
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 2),
                 child: Row(
                   children: [
-                    const SizedBox(width: 8),
-                    const Icon(Icons.search, color: Colors.grey),
-                    const SizedBox(width: 8),
+                    const Icon(Icons.search, color: Colors.blueAccent, size: 20),
+                    const SizedBox(width: 10),
                     Expanded(
                       child: TextField(
                         controller: _searchController,
-                        decoration: const InputDecoration(hintText: "Search Google Maps...", border: InputBorder.none),
+                        decoration: const InputDecoration(
+                          hintText: "Search address or coordinates...", 
+                          border: InputBorder.none,
+                          hintStyle: TextStyle(fontSize: 14, color: Colors.black54),
+                        ),
                         onSubmitted: (_) => _performSearch(),
                       ),
                     ),
                     IconButton(
                       icon: _isSearching 
-                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) 
-                        : const Icon(Icons.arrow_forward, color: Colors.blue),
+                        ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) 
+                        : const Icon(Icons.arrow_forward_rounded, color: Colors.blueAccent),
                       onPressed: _performSearch,
                     ),
                   ],
@@ -176,43 +240,74 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
           // Layer Toggle Button
           Positioned(
             right: 16,
-            bottom: 100,
-            child: FloatingActionButton(
-              backgroundColor: Colors.white,
+            bottom: 104,
+            child: FloatingActionButton.extended(
+              backgroundColor: Colors.black87,
+              foregroundColor: Colors.white,
+              elevation: 4,
               onPressed: _toggleLayer,
-              child: Icon(_mapLayers[_currentLayerIndex]['icon'], color: Colors.black87),
-            ),
-          ),
-          
-          // Layer Name Label
-          Positioned(
-            right: 80,
-            bottom: 115,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(8)),
-              child: Text(
-                _currentLayerIndex == 0 ? "Switch to Satellite" : "Switch to Roads",
-                style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+              icon: Icon(_mapLayers[_currentLayerIndex]['icon'], color: Colors.cyanAccent, size: 20),
+              label: Text(
+                _mapLayers[(_currentLayerIndex + 1) % _mapLayers.length]['name'],
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
               ),
             ),
           ),
 
-          // Coordinates Box
+          // Floating Location Name & Coordinates Glass Card
           Positioned(
-            bottom: 30, left: 20, right: 20,
+            bottom: 16, left: 16, right: 16,
             child: Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(color: Colors.black87, borderRadius: BorderRadius.circular(12)),
-              child: Text(
-                "Selected: ${_selectedLocation.latitude.toStringAsFixed(6)}, ${_selectedLocation.longitude.toStringAsFixed(6)}",
-                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                textAlign: TextAlign.center,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.9),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
+                boxShadow: const [
+                  BoxShadow(color: Colors.black54, blurRadius: 10, offset: Offset(0, 4)),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.location_on, color: Colors.redAccent, size: 20),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _currentLocationName,
+                          style: const TextStyle(
+                            color: Colors.white, 
+                            fontWeight: FontWeight.bold, 
+                            fontSize: 14,
+                          ),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Padding(
+                    padding: const EdgeInsets.only(left: 28),
+                    child: Text(
+                      "${_selectedLocation.latitude.toStringAsFixed(6)}°, ${_selectedLocation.longitude.toStringAsFixed(6)}°",
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.7), 
+                        fontSize: 11,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
         ],
       ),
+      bottomNavigationBar: const SafeArea(child: AdBannerWidget()),
     );
   }
 }

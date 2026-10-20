@@ -10,12 +10,18 @@ class GPSOverlayCard extends StatefulWidget {
   final Position? position;
   final Placemark? address;
   final DateTime dateTime;
+  final bool showMap;
+  final Color textColor;
+  final String mapStyle;
 
   const GPSOverlayCard({
     super.key,
     required this.position,
     required this.address,
     required this.dateTime,
+    this.showMap = true,
+    this.textColor = Colors.white,
+    this.mapStyle = 'Satellite',
   });
 
   @override
@@ -46,56 +52,118 @@ class _GPSOverlayCardState extends State<GPSOverlayCard> {
     return "${directions[index]} ${heading.toInt()}°";
   }
 
+  String _formatAddress(Placemark? address) {
+    if (address == null) {
+      return widget.position != null
+          ? "Lat: ${widget.position!.latitude.toStringAsFixed(5)}, Lng: ${widget.position!.longitude.toStringAsFixed(5)}"
+          : "Acquiring GPS location...";
+    }
+
+    final parts = <String>[];
+    if (address.name != null && address.name!.trim().isNotEmpty) {
+      parts.add(address.name!.trim());
+    }
+    final streetParts = [address.subThoroughfare, address.thoroughfare]
+        .where((s) => s != null && s.trim().isNotEmpty)
+        .join(" ");
+    if (streetParts.isNotEmpty && !parts.contains(streetParts)) {
+      parts.add(streetParts);
+    }
+
+    if (address.subLocality != null && address.subLocality!.trim().isNotEmpty && !parts.contains(address.subLocality!.trim())) {
+      parts.add(address.subLocality!.trim());
+    }
+    if (address.locality != null && address.locality!.trim().isNotEmpty && !parts.contains(address.locality!.trim())) {
+      parts.add(address.locality!.trim());
+    }
+    if (address.administrativeArea != null && address.administrativeArea!.trim().isNotEmpty && !parts.contains(address.administrativeArea!.trim())) {
+      parts.add(address.administrativeArea!.trim());
+    }
+
+    if (parts.isEmpty) {
+      return widget.position != null
+          ? "Lat: ${widget.position!.latitude.toStringAsFixed(5)}, Lng: ${widget.position!.longitude.toStringAsFixed(5)}"
+          : "Acquiring GPS location...";
+    }
+    return parts.join(", ");
+  }
+
   @override
   Widget build(BuildContext context) {
-    // FORMATTING: "Sunday, 08 Feb 2026"
     final dayStr = DateFormat('EEEE').format(widget.dateTime);
     final dateStr = DateFormat('dd MMM yyyy').format(widget.dateTime);
-    final timeStr = DateFormat('hh:mm a').format(widget.dateTime);
+    final timeStr = DateFormat('hh:mm:ss a').format(widget.dateTime);
     
     final lat = widget.position?.latitude ?? 0.0;
     final lng = widget.position?.longitude ?? 0.0;
+    final altitude = widget.position?.altitude ?? 0.0;
     final heading = widget.position?.heading ?? 0.0;
     final point = LatLng(lat, lng);
 
+    final baseTextColor = widget.textColor;
+    final addressText = _formatAddress(widget.address);
+
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
+      padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 8.0),
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(15), 
+        borderRadius: BorderRadius.circular(16), 
         child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8), 
+          filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12), 
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
             decoration: BoxDecoration(
-              color: Colors.black.withOpacity(0.4), 
-              borderRadius: BorderRadius.circular(15),
-              border: Border.all(color: Colors.white.withOpacity(0.2), width: 1),
+              gradient: LinearGradient(
+                colors: [
+                  Colors.black.withValues(alpha: 0.65), 
+                  Colors.black.withValues(alpha: 0.45),
+                ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: Colors.white.withValues(alpha: 0.18), 
+                width: 0.8,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.35),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                )
+              ],
             ),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                // --- LEFT SIDE: INFO ---
+                // --- TELEMETRY DATA COLUMN ---
                 Expanded(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // 1. LOCATION (Street & Area)
+                      // 1. LOCATION (Formatted Street & City)
                       Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Icon(Icons.location_on, color: Colors.redAccent, size: 16),
+                          Container(
+                            padding: const EdgeInsets.all(3),
+                            decoration: BoxDecoration(
+                              color: Colors.redAccent.withValues(alpha: 0.2),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(Icons.location_on, color: Colors.redAccent, size: 13),
+                          ),
                           const SizedBox(width: 6),
                           Expanded(
                             child: Text(
-                              widget.address != null 
-                                ? "${widget.address!.street}, ${widget.address!.locality}"
-                                : "Locating...",
-                              style: const TextStyle(
-                                color: Colors.white, 
+                              addressText,
+                              style: TextStyle(
+                                color: baseTextColor, 
                                 fontWeight: FontWeight.bold, 
-                                fontSize: 13,
-                                shadows: [Shadow(color: Colors.black, blurRadius: 2)]
+                                fontSize: 12.5,
+                                letterSpacing: 0.2,
+                                shadows: const [Shadow(color: Colors.black, blurRadius: 4)],
                               ),
                               maxLines: 2,
                               overflow: TextOverflow.ellipsis,
@@ -104,19 +172,20 @@ class _GPSOverlayCardState extends State<GPSOverlayCard> {
                         ],
                       ),
                       
-                      const SizedBox(height: 4),
+                      const SizedBox(height: 5),
 
-                      // 2. DAY & TIME (Added Day Name)
+                      // 2. DAY & TIME
                       Row(
                         children: [
-                          const Icon(Icons.calendar_month, color: Colors.amber, size: 12),
+                          Icon(Icons.access_time_filled, color: Colors.amberAccent.shade400, size: 12),
                           const SizedBox(width: 6),
                           Text(
-                            "$dayStr, $dateStr  |  $timeStr",
-                            style: const TextStyle(
-                              color: Colors.amber, 
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600
+                            "$dayStr, $dateStr  •  $timeStr",
+                            style: TextStyle(
+                              color: Colors.amberAccent.shade200, 
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: 0.2,
                             ),
                           ),
                         ],
@@ -124,17 +193,21 @@ class _GPSOverlayCardState extends State<GPSOverlayCard> {
 
                       const SizedBox(height: 4),
 
-                      // 3. LAT/LNG + COMPASS (Added Direction)
+                      // 3. LAT/LNG + COMPASS + ALTITUDE (Monospace telemetry)
                       Row(
                         children: [
-                          const Icon(Icons.explore, color: Colors.cyanAccent, size: 12),
+                          const Icon(Icons.explore_outlined, color: Colors.cyanAccent, size: 12),
                           const SizedBox(width: 6),
-                          Text(
-                            "${_getDirection(heading)}  |  ${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}",
-                            style: const TextStyle(
-                              color: Colors.white70, 
-                              fontSize: 11,
-                              fontFamily: 'monospace' 
+                          Expanded(
+                            child: Text(
+                              "${lat.toStringAsFixed(5)}°N, ${lng.toStringAsFixed(5)}°E  |  ${_getDirection(heading)}  |  ${altitude.toStringAsFixed(1)}m",
+                              style: TextStyle(
+                                color: Colors.white.withValues(alpha: 0.85), 
+                                fontSize: 10,
+                                fontFamily: 'monospace',
+                                letterSpacing: -0.3,
+                              ),
+                              overflow: TextOverflow.ellipsis,
                             ),
                           ),
                         ],
@@ -143,22 +216,25 @@ class _GPSOverlayCardState extends State<GPSOverlayCard> {
                   ),
                 ),
 
-                const SizedBox(width: 10),
-
-                // --- RIGHT SIDE: MINI MAP (Google Hybrid) ---
-                if (widget.position != null)
+                // --- MINI MAP THUMBNAIL (Optional) ---
+                if (widget.showMap && widget.position != null) ...[
+                  const SizedBox(width: 12),
                   Container(
-                    width: 65,
-                    height: 65,
+                    width: 68,
+                    height: 68,
                     decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: Colors.white, width: 1.5),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.white.withValues(alpha: 0.4), width: 1.2),
                       boxShadow: [
-                        BoxShadow(color: Colors.black.withOpacity(0.3), blurRadius: 4, offset: const Offset(0, 2))
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.4),
+                          blurRadius: 6,
+                          offset: const Offset(0, 2),
+                        )
                       ],
                     ),
                     child: ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(10),
                       child: Stack(
                         children: [
                           FlutterMap(
@@ -171,18 +247,44 @@ class _GPSOverlayCardState extends State<GPSOverlayCard> {
                             ),
                             children: [
                               TileLayer(
-                                urlTemplate: 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', // Google Hybrid
-                                userAgentPackageName: 'com.example.gps_camera',
+                                urlTemplate: widget.mapStyle == 'Street Map'
+                                    ? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+                                    : widget.mapStyle == 'Voyager'
+                                        ? 'https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png'
+                                        : 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+                                userAgentPackageName: 'com.mubeen.gpscampro',
                               ),
                             ],
                           ),
-                          const Center(
-                            child: Icon(Icons.location_pin, color: Colors.red, size: 24),
+                          // Radar pulse dot
+                          Center(
+                            child: Container(
+                              width: 14,
+                              height: 14,
+                              decoration: BoxDecoration(
+                                color: Colors.redAccent.withValues(alpha: 0.35),
+                                shape: BoxShape.circle,
+                              ),
+                              child: Center(
+                                child: Container(
+                                  width: 7,
+                                  height: 7,
+                                  decoration: const BoxDecoration(
+                                    color: Colors.redAccent,
+                                    shape: BoxShape.circle,
+                                    boxShadow: [
+                                      BoxShadow(color: Colors.red, blurRadius: 4, spreadRadius: 1)
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
                           ),
                         ],
                       ),
                     ),
                   ),
+                ],
               ],
             ),
           ),

@@ -1,15 +1,18 @@
 import 'package:flutter/material.dart';
+import '../widgets/ad_banner_widget.dart';
 
 class SettingsScreen extends StatefulWidget {
   final bool showMap;
   final bool isBottom;
   final Color textColor;
+  final String mapStyle;
 
   const SettingsScreen({
     super.key,
     required this.showMap,
     required this.isBottom,
     required this.textColor,
+    this.mapStyle = 'Satellite',
   });
 
   @override
@@ -20,6 +23,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late bool _showMap;
   late bool _isBottom;
   late Color _textColor;
+  late String _mapStyle;
+
+  final List<Color> _curatedColors = [
+    Colors.white,
+    Colors.amberAccent,
+    Colors.cyanAccent,
+    Colors.greenAccent,
+    Colors.orangeAccent,
+  ];
+
+  final List<Map<String, dynamic>> _availableMapStyles = [
+    {'name': 'Satellite', 'icon': Icons.satellite_alt_rounded, 'desc': 'High-res aerial imagery'},
+    {'name': 'Street Map', 'icon': Icons.terrain, 'desc': 'Clean vector street layout'},
+    {'name': 'Voyager', 'icon': Icons.map, 'desc': 'Minimal CartoDB cartography'},
+  ];
 
   @override
   void initState() {
@@ -27,6 +45,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _showMap = widget.showMap;
     _isBottom = widget.isBottom;
     _textColor = widget.textColor;
+    _mapStyle = widget.mapStyle;
   }
 
   void _saveAndExit() {
@@ -34,43 +53,185 @@ class _SettingsScreenState extends State<SettingsScreen> {
       'showMap': _showMap,
       'isBottom': _isBottom,
       'textColor': _textColor,
+      'mapStyle': _mapStyle,
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text("Settings"),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: _saveAndExit,
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        _saveAndExit();
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFF121212),
+        appBar: AppBar(
+          backgroundColor: const Color(0xFF1E1E1E),
+          elevation: 0,
+          title: const Text(
+            "Stamp Settings",
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18),
+          ),
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 20),
+            onPressed: _saveAndExit,
+          ),
         ),
-      ),
-      body: ListView(
-        children: [
-          SwitchListTile(
-            title: const Text("Show Map Thumbnail"),
-            value: _showMap,
-            onChanged: (val) => setState(() => _showMap = val),
-          ),
-          SwitchListTile(
-            title: const Text("Overlay at Bottom"),
-            subtitle: const Text("Show GPS info at bottom of photo"),
-            value: _isBottom,
-            onChanged: (val) => setState(() => _isBottom = val),
-          ),
-          ListTile(
-            title: const Text("Text Color"),
-            trailing: CircleAvatar(backgroundColor: _textColor, radius: 15),
-            onTap: () {
-              // Simple toggler for demo purposes
-              setState(() {
-                _textColor = _textColor == Colors.white ? Colors.yellow : Colors.white;
-              });
-            },
-          ),
-        ],
+        body: ListView(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+          children: [
+            const Padding(
+              padding: EdgeInsets.only(left: 4, bottom: 8),
+              child: Text(
+                "STAMP CUSTOMIZATION",
+                style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 0.8),
+              ),
+            ),
+            Card(
+              color: const Color(0xFF1E1E1E),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              child: Column(
+                children: [
+                  SwitchListTile(
+                    title: const Text("Show Map Thumbnail", style: TextStyle(color: Colors.white, fontSize: 15)),
+                    subtitle: const Text("Embeds a mini satellite/road map on photo", style: TextStyle(color: Colors.grey, fontSize: 12)),
+                    value: _showMap,
+                    activeThumbColor: Colors.blueAccent,
+                    onChanged: (val) => setState(() => _showMap = val),
+                  ),
+                  const Divider(color: Colors.white10, height: 1),
+                  SwitchListTile(
+                    title: const Text("Stamp at Bottom", style: TextStyle(color: Colors.white, fontSize: 15)),
+                    subtitle: Text(
+                      _isBottom ? "Positioned at bottom of photo" : "Positioned at top of photo",
+                      style: const TextStyle(color: Colors.grey, fontSize: 12),
+                    ),
+                    value: _isBottom,
+                    activeThumbColor: Colors.blueAccent,
+                    onChanged: (val) => setState(() => _isBottom = val),
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 24),
+
+            const Padding(
+              padding: EdgeInsets.only(left: 4, bottom: 8),
+              child: Text(
+                "MAP STYLE",
+                style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 0.8),
+              ),
+            ),
+            Card(
+              color: const Color(0xFF1E1E1E),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              child: Column(
+                children: _availableMapStyles.map((style) {
+                  final isSelected = _mapStyle == style['name'];
+                  final isLast = _availableMapStyles.last == style;
+                  return Column(
+                    children: [
+                      ListTile(
+                        leading: Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: isSelected ? Colors.blueAccent.withValues(alpha: 0.2) : Colors.white10,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Icon(
+                            style['icon'] as IconData,
+                            color: isSelected ? Colors.blueAccent : Colors.white70,
+                            size: 20,
+                          ),
+                        ),
+                        title: Text(
+                          style['name'] as String,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 15,
+                            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                          ),
+                        ),
+                        subtitle: Text(
+                          style['desc'] as String,
+                          style: const TextStyle(color: Colors.grey, fontSize: 12),
+                        ),
+                        trailing: isSelected
+                            ? const Icon(Icons.check_circle_rounded, color: Colors.blueAccent, size: 22)
+                            : const Icon(Icons.circle_outlined, color: Colors.white24, size: 22),
+                        onTap: () => setState(() => _mapStyle = style['name'] as String),
+                      ),
+                      if (!isLast) const Divider(color: Colors.white10, height: 1),
+                    ],
+                  );
+                }).toList(),
+              ),
+            ),
+
+            const SizedBox(height: 24),
+
+            const Padding(
+              padding: EdgeInsets.only(left: 4, bottom: 8),
+              child: Text(
+                "TELEMETRY TEXT COLOR",
+                style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 0.8),
+              ),
+            ),
+            Card(
+              color: const Color(0xFF1E1E1E),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: _curatedColors.map((color) {
+                    final isSelected = _textColor.toARGB32() == color.toARGB32();
+                    return GestureDetector(
+                      onTap: () => setState(() => _textColor = color),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: color,
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: isSelected ? Colors.blueAccent : Colors.transparent,
+                            width: 3,
+                          ),
+                          boxShadow: isSelected
+                              ? [BoxShadow(color: color.withValues(alpha: 0.5), blurRadius: 10, spreadRadius: 2)]
+                              : null,
+                        ),
+                        child: isSelected
+                            ? Icon(Icons.check, color: color == Colors.white ? Colors.black : Colors.black87, size: 22)
+                            : null,
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 32),
+
+            Center(
+              child: Column(
+                children: [
+                  Icon(Icons.camera_alt_outlined, color: Colors.grey.shade600, size: 32),
+                  const SizedBox(height: 8),
+                  const Text("GPSCam Pro", style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold, fontSize: 14)),
+                  const SizedBox(height: 4),
+                  const Text("Version 1.0.0", style: TextStyle(color: Colors.grey, fontSize: 12)),
+                ],
+              ),
+            ),
+          ],
+        ),
+        bottomNavigationBar: const SafeArea(child: AdBannerWidget()),
       ),
     );
   }

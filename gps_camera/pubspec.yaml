@@ -1,7 +1,5 @@
 name: gps_camera
 description: A GPS Camera application.
-# Added Developer Name for documentation
-author: "Mubeen" 
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -33,6 +31,7 @@ dependencies:
   
   # Splash Screen (Runtime dependency)
   flutter_native_splash: ^2.4.0
+  google_mobile_ads: ^9.1.0
 
 dev_dependencies:
   flutter_test:
@@ -46,7 +45,7 @@ flutter:
   uses-material-design: true
   assets:
     - assets/image_0.png
-    - assets/image_0.png
+    - assets/developer_text.png
 
 # --- Splash Screen Config ---
 # --- Splash Screen Config ---
