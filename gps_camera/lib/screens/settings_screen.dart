@@ -1,5 +1,8 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import '../widgets/ad_banner_widget.dart';
+import 'editor_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   final bool showMap;
@@ -213,6 +216,51 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     );
                   }).toList(),
                 ),
+              ),
+            ),
+
+            const SizedBox(height: 18),
+            const Padding(
+              padding: EdgeInsets.only(left: 4, bottom: 8),
+              child: Text(
+                "PHOTO UTILITIES",
+                style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 0.8),
+              ),
+            ),
+            Card(
+              color: const Color(0xFF1E1E1E),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              child: ListTile(
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.amberAccent.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.add_photo_alternate_rounded, color: Colors.amberAccent, size: 22),
+                ),
+                title: const Text("Import Photo from Device", style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
+                subtitle: const Text("Select an existing gallery photo to add GPS watermark", style: TextStyle(color: Colors.grey, fontSize: 12)),
+                trailing: const Icon(Icons.arrow_forward_ios_rounded, color: Colors.white38, size: 16),
+                onTap: () async {
+                  try {
+                    final picker = ImagePicker();
+                    final xfile = await picker.pickImage(source: ImageSource.gallery);
+                    if (xfile != null && context.mounted) {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => EditorScreen(
+                            imageFile: File(xfile.path),
+                            aspectRatio: 3 / 4,
+                          ),
+                        ),
+                      );
+                    }
+                  } catch (e) {
+                    debugPrint("Import error: $e");
+                  }
+                },
               ),
             ),
 

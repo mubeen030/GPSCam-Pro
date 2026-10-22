@@ -1,21 +1,21 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' as ui;
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
-import 'package:gal/gal.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:latlong2/latlong.dart'; // Needed for LatLng
-import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:screenshot/screenshot.dart';
 
 import '../services/ad_service.dart';
+import '../services/album_service.dart';
 import '../services/location_service.dart';
 import '../widgets/gps_overlay_card.dart';
-import 'editor_screen.dart';
+import 'album_viewer_screen.dart';
 import 'location_picker_screen.dart';
 import 'settings_screen.dart';
 
@@ -30,20 +30,32 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   CameraController? _controller;
   List<CameraDescription>? _cameras;
   final LocationService _locationService = LocationService();
-  final ImagePicker _picker = ImagePicker();
   final ScreenshotController _screenshotController = ScreenshotController();
+  final GlobalKey _overlayCardKey = GlobalKey();
 
   int _selectedCameraIndex = 0;
   FlashMode _flashMode = FlashMode.off;
   String _ratioName = "4:3";
   bool _isSavingPhoto = false;
-  bool _showShutterFlash = false;
 
   // --- STAMP CONFIGURATION ---
   bool _showMapInOverlay = true;
   bool _overlayAtBottom = true;
   Color _overlayTextColor = Colors.white;
   String _mapStyle = 'Satellite';
+
+  // --- ZOOM & GRID ---
+  double _minAvailableZoom = 1.0;
+  double _maxAvailableZoom = 1.0;
+  double _currentZoom = 1.0;
+  double _baseScale = 1.0;
+  bool _showGrid = false;
+
+  // --- SHUTTER FEEDBACK ---
+  bool _showShutterCurtain = false;
+  bool _showSavedIndicator = false;
+  Timer? _savedIndicatorTimer;
+  Uint8List? _lastCapturedThumbnail;
 
   // --- FOCUS & EXPOSURE VARIABLES ---
   double _minAvailableExposureOffset = 0.0;
@@ -65,17 +77,36 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   
   StreamSubscription<Position>? _positionStream;
   Timer? _timeTimer;
-  DateTime _currentTime = DateTime.now();
+  final ValueNotifier<DateTime> _currentTimeNotifier = ValueNotifier<DateTime>(DateTime.now());
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _initApp();
+    _loadLatestThumbnail();
     AdService.instance.loadInterstitialAd();
     _timeTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() => _currentTime = DateTime.now());
+      _currentTimeNotifier.value = DateTime.now();
     });
+  }
+
+  Future<void> _loadLatestThumbnail() async {
+    try {
+      final latest = await AlbumService.instance.getLatestPhoto();
+      if (latest != null && await latest.exists()) {
+        final bytes = await latest.readAsBytes();
+        if (mounted) {
+          setState(() => _lastCapturedThumbnail = bytes);
+        }
+      } else {
+        if (mounted && _lastCapturedThumbnail != null) {
+          setState(() => _lastCapturedThumbnail = null);
+        }
+      }
+    } catch (e) {
+      debugPrint("Error loading latest thumbnail: $e");
+    }
   }
 
   @override
@@ -83,7 +114,9 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     _controller?.dispose();
     _positionStream?.cancel();
     _timeTimer?.cancel();
+    _currentTimeNotifier.dispose();
     _focusTimer?.cancel();
+    _savedIndicatorTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     AdService.instance.dispose();
     super.dispose();
@@ -107,6 +140,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
           _initApp();
         }
       }
+      _startLocationStream();
     }
   }
 
@@ -169,10 +203,10 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       }
     }
 
-    // Try ResolutionPreset.high for fast startup and rock-solid compatibility
+    // Use ResolutionPreset.medium for buttery smooth 60 FPS preview without dropped frames
     CameraController newController = CameraController(
       cameraDescription, 
-      ResolutionPreset.high, 
+      ResolutionPreset.medium, 
       enableAudio: false,
       imageFormatGroup: Platform.isAndroid ? ImageFormatGroup.jpeg : ImageFormatGroup.bgra8888,
     );
@@ -184,6 +218,14 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
         _minAvailableExposureOffset = await newController.getMinExposureOffset();
         _maxAvailableExposureOffset = await newController.getMaxExposureOffset();
       } catch (_) {}
+      try {
+        _minAvailableZoom = await newController.getMinZoomLevel();
+        _maxAvailableZoom = await newController.getMaxZoomLevel();
+      } catch (_) {
+        _minAvailableZoom = 1.0;
+        _maxAvailableZoom = 1.0;
+      }
+      _currentZoom = _minAvailableZoom;
       try {
         await newController.setFlashMode(_flashMode);
       } catch (_) {
@@ -212,6 +254,14 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
         );
         await newController.initialize();
         _controller = newController;
+        try {
+          _minAvailableZoom = await newController.getMinZoomLevel();
+          _maxAvailableZoom = await newController.getMaxZoomLevel();
+        } catch (_) {
+          _minAvailableZoom = 1.0;
+          _maxAvailableZoom = 1.0;
+        }
+        _currentZoom = _minAvailableZoom;
         if (mounted) {
           setState(() {
             _isCameraInitialized = true;
@@ -232,11 +282,36 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     }
   }
 
-  void _startLocationStream() {
-    // We keep the stream running in background, but only update UI if !_isManualLocation
-    const locationSettings = LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 10);
+  Future<void> _startLocationStream() async {
+    // 1. Immediately fetch last known position so overlay displays coordinates right away
+    try {
+      final lastPos = await _locationService.getLastKnownPosition();
+      if (lastPos != null && mounted && !_isManualLocation && _currentPosition == null) {
+        setState(() => _currentPosition = lastPos);
+        _updateAddress(lastPos.latitude, lastPos.longitude);
+      }
+    } catch (e) {
+      debugPrint("Last known location fetch error: $e");
+    }
+
+    // 2. Concurrently fetch high-accuracy fresh current position
+    try {
+      final freshPos = await _locationService.getCurrentPosition();
+      if (freshPos != null && mounted && !_isManualLocation) {
+        setState(() => _currentPosition = freshPos);
+        _updateAddress(freshPos.latitude, freshPos.longitude);
+      }
+    } catch (e) {
+      debugPrint("Current location fetch error: $e");
+    }
+
+    // 3. Keep stream listening with lower distanceFilter so movements update
+    const locationSettings = LocationSettings(
+      accuracy: LocationAccuracy.high,
+      distanceFilter: 2,
+    );
+    _positionStream?.cancel();
     _positionStream = Geolocator.getPositionStream(locationSettings: locationSettings).listen((p) {
-      // ONLY update if we are NOT in manual mode
       if (mounted && !_isManualLocation) {
         setState(() => _currentPosition = p);
         _updateAddress(p.latitude, p.longitude);
@@ -338,14 +413,53 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     }
   }
 
-  Future<void> _toggleFlash() async {
-    if (_controller == null) return;
+  void _toggleGrid() {
     HapticFeedback.selectionClick();
+    setState(() => _showGrid = !_showGrid);
+  }
+
+  Future<void> _toggleFlash() async {
+    if (_controller == null || !_controller!.value.isInitialized) return;
+    HapticFeedback.selectionClick();
+    FlashMode nextMode;
+    switch (_flashMode) {
+      case FlashMode.off:
+        nextMode = FlashMode.auto;
+        break;
+      case FlashMode.auto:
+        nextMode = FlashMode.always;
+        break;
+      case FlashMode.always:
+        nextMode = FlashMode.torch;
+        break;
+      case FlashMode.torch:
+        nextMode = FlashMode.off;
+        break;
+    }
+
     try {
-      FlashMode nextMode = _flashMode == FlashMode.off ? FlashMode.torch : FlashMode.off;
       await _controller!.setFlashMode(nextMode);
-      setState(() => _flashMode = nextMode);
-    } catch (e) { debugPrint("Flash error: $e"); }
+      if (mounted) setState(() => _flashMode = nextMode);
+    } catch (e) {
+      debugPrint("Flash error for $nextMode: $e");
+      try {
+        await _controller!.setFlashMode(FlashMode.off);
+        if (mounted) setState(() => _flashMode = FlashMode.off);
+      } catch (_) {}
+    }
+  }
+
+  IconData _getFlashIcon() {
+    switch (_flashMode) {
+      case FlashMode.auto:
+        return Icons.flash_auto;
+      case FlashMode.always:
+        return Icons.flash_on;
+      case FlashMode.torch:
+        return Icons.highlight;
+      case FlashMode.off:
+        return Icons.flash_off;
+    }
   }
 
   Future<void> _openSettings() async {
@@ -377,14 +491,16 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       return;
     }
 
-    HapticFeedback.mediumImpact();
+    HapticFeedback.heavyImpact();
+    SystemSound.play(SystemSoundType.click);
+
     setState(() {
-      _showShutterFlash = true;
+      _showShutterCurtain = true;
       _isSavingPhoto = true;
     });
 
-    Future.delayed(const Duration(milliseconds: 80), () {
-      if (mounted) setState(() => _showShutterFlash = false);
+    Future.delayed(const Duration(milliseconds: 70), () {
+      if (mounted) setState(() => _showShutterCurtain = false);
     });
 
     final screenWidth = MediaQuery.of(context).size.width;
@@ -392,6 +508,17 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     double previewHeight = screenWidth / targetRatio;
     if (_ratioName == "Full") {
       previewHeight = MediaQuery.of(context).size.height;
+    }
+
+    // Capture the on-screen rendered overlay GPU image in ~1ms (zero PNG encoding overhead on UI thread)
+    ui.Image? capturedOverlayImage;
+    try {
+      final boundary = _overlayCardKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+      if (boundary != null) {
+        capturedOverlayImage = await boundary.toImage(pixelRatio: 2.0);
+      }
+    } catch (e) {
+      debugPrint("Overlay boundary capture error: $e");
     }
 
     try {
@@ -403,9 +530,20 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       }
 
       // Snapshot current state for background processing
-      final currentPos = _currentPosition;
-      final currentAddr = _currentAddress;
-      final currentTime = _currentTime;
+      Position? currentPos = _currentPosition;
+      Placemark? currentAddr = _currentAddress;
+
+      // Fallback: If position is null, try to get last known immediately so stamp is guaranteed
+      if (currentPos == null) {
+        try {
+          currentPos = await _locationService.getLastKnownPosition();
+          if (currentPos != null && currentAddr == null) {
+            currentAddr = await _locationService.getAddressFromLatLng(currentPos.latitude, currentPos.longitude);
+          }
+        } catch (_) {}
+      }
+
+      final currentTime = _currentTimeNotifier.value;
       final showMap = _showMapInOverlay;
       final isBottom = _overlayAtBottom;
       final textColor = _overlayTextColor;
@@ -414,6 +552,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       // Process and save silently in the background (no loading delay, no popup message)
       _processAndSavePhoto(
         image: image,
+        overlayImage: capturedOverlayImage,
         position: currentPos,
         address: currentAddr,
         dateTime: currentTime,
@@ -425,6 +564,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
         previewHeight: previewHeight,
       );
     } catch (e) {
+      capturedOverlayImage?.dispose();
       debugPrint("Photo capture error: $e");
       if (mounted) {
         setState(() => _isSavingPhoto = false);
@@ -432,8 +572,87 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     }
   }
 
+  Future<void> _waitForImageToDecode(Uint8List bytes) async {
+    final completer = Completer<void>();
+    final imageProvider = MemoryImage(bytes);
+    final stream = imageProvider.resolve(ImageConfiguration.empty);
+    late ImageStreamListener listener;
+    listener = ImageStreamListener(
+      (info, _) {
+        stream.removeListener(listener);
+        completer.complete();
+      },
+      onError: (e, s) {
+        stream.removeListener(listener);
+        completer.complete();
+      },
+    );
+    stream.addListener(listener);
+    await completer.future;
+  }
+
+  Future<Uint8List> _compositeOverlay({
+    required Uint8List photoBytes,
+    required ui.Image overlayImage,
+    required bool isBottom,
+  }) async {
+    final photoCodec = await ui.instantiateImageCodec(photoBytes);
+    final photoFrame = await photoCodec.getNextFrame();
+    final photoImage = photoFrame.image;
+
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(
+      recorder,
+      Rect.fromLTWH(0, 0, photoImage.width.toDouble(), photoImage.height.toDouble()),
+    );
+
+    // 1. Draw raw camera photo at native resolution
+    canvas.drawImage(photoImage, Offset.zero, Paint());
+
+    // 2. Draw overlay scaled proportionally to match photo width
+    final double targetWidth = photoImage.width.toDouble();
+    final double scale = targetWidth / overlayImage.width;
+    final double targetHeight = overlayImage.height * scale;
+
+    final double margin = 16.0 * scale;
+    final double yPos = isBottom
+        ? (photoImage.height - targetHeight - margin)
+        : margin;
+
+    final srcRect = Rect.fromLTWH(
+      0, 
+      0, 
+      overlayImage.width.toDouble(), 
+      overlayImage.height.toDouble(),
+    );
+    final dstRect = Rect.fromLTWH(
+      0, 
+      yPos, 
+      targetWidth, 
+      targetHeight,
+    );
+
+    canvas.drawImageRect(
+      overlayImage,
+      srcRect,
+      dstRect,
+      Paint()..filterQuality = FilterQuality.medium,
+    );
+
+    final picture = recorder.endRecording();
+    final finalImage = await picture.toImage(photoImage.width, photoImage.height);
+    final byteData = await finalImage.toByteData(format: ui.ImageByteFormat.png);
+
+    photoImage.dispose();
+    overlayImage.dispose();
+    finalImage.dispose();
+
+    return byteData!.buffer.asUint8List();
+  }
+
   Future<void> _processAndSavePhoto({
     required XFile image,
+    required ui.Image? overlayImage,
     required Position? position,
     required Placemark? address,
     required DateTime dateTime,
@@ -446,70 +665,85 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   }) async {
     try {
       final Uint8List imageBytes = await image.readAsBytes();
+      Uint8List? compositedBytes;
 
-      final Uint8List compositedBytes = await _screenshotController.captureFromWidget(
-        Material(
-          color: Colors.black,
-          child: SizedBox(
-            width: screenWidth,
-            height: previewHeight,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                Image.memory(
-                  imageBytes,
-                  fit: BoxFit.cover,
-                  alignment: Alignment.center,
-                ),
-                Align(
-                  alignment: isBottom ? Alignment.bottomCenter : Alignment.topCenter,
-                  child: Padding(
-                    padding: EdgeInsets.only(
-                      bottom: isBottom ? 20 : 0,
-                      top: isBottom ? 0 : 20,
-                    ),
-                    child: GPSOverlayCard(
-                      position: position,
-                      address: address,
-                      dateTime: dateTime,
-                      showMap: showMap,
-                      textColor: textColor,
-                      mapStyle: mapStyle,
+      // Method 1: Ultra-fast Canvas compositing using on-screen overlay GPU image
+      if (overlayImage != null) {
+        try {
+          compositedBytes = await _compositeOverlay(
+            photoBytes: imageBytes,
+            overlayImage: overlayImage,
+            isBottom: isBottom,
+          );
+        } catch (e) {
+          debugPrint("Canvas compositing error, falling back to captureFromWidget: $e");
+        }
+      }
+
+      // Method 2: Fallback to widget rasterization if on-screen overlay capture failed
+      if (compositedBytes == null) {
+        await _waitForImageToDecode(imageBytes);
+        compositedBytes = await _screenshotController.captureFromWidget(
+          Material(
+            color: Colors.transparent,
+            child: SizedBox(
+              width: screenWidth,
+              height: previewHeight,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  Image.memory(
+                    imageBytes,
+                    fit: BoxFit.cover,
+                    alignment: Alignment.center,
+                    gaplessPlayback: true,
+                  ),
+                  Align(
+                    alignment: isBottom ? Alignment.bottomCenter : Alignment.topCenter,
+                    child: Padding(
+                      padding: EdgeInsets.only(
+                        bottom: isBottom ? 20 : 0,
+                        top: isBottom ? 0 : 20,
+                      ),
+                      child: GPSOverlayCard(
+                        position: position,
+                        address: address,
+                        dateTime: dateTime,
+                        showMap: showMap,
+                        textColor: textColor,
+                        mapStyle: mapStyle,
+                      ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
-        ),
-        delay: const Duration(milliseconds: 40),
-        pixelRatio: 2.0,
-      );
+          delay: const Duration(milliseconds: 300),
+          pixelRatio: 2.5,
+        );
+      }
 
-      final tempDir = await getTemporaryDirectory();
-      final filePath = '${tempDir.path}/GPS_${DateTime.now().millisecondsSinceEpoch}.png';
-      final file = File(filePath);
-      await file.writeAsBytes(compositedBytes);
-
-      // Save directly to device gallery
-      await Gal.putImage(file.path, album: "GPS Camera Pro");
+      // Save directly to persistent app album and device gallery
+      await AlbumService.instance.savePhoto(compositedBytes);
       AdService.instance.onPhotoSaved(interval: 3);
 
-      // Clean up temp files silently
+      if (mounted) {
+        setState(() {
+          _lastCapturedThumbnail = compositedBytes;
+          _showSavedIndicator = true;
+        });
+        _savedIndicatorTimer?.cancel();
+        _savedIndicatorTimer = Timer(const Duration(milliseconds: 1400), () {
+          if (mounted) setState(() => _showSavedIndicator = false);
+        });
+      }
+
+      // Clean up raw camera capture
       try { await File(image.path).delete(); } catch (_) {}
-      try { await file.delete(); } catch (_) {}
     } catch (e) {
       debugPrint("Background photo composite/save error: $e");
     }
-  }
-
-  void _goToEditor(File imageFile) {
-    Navigator.push(context, MaterialPageRoute(builder: (_) => EditorScreen(
-      imageFile: imageFile, 
-      initialPosition: _currentPosition, 
-      initialAddress: _currentAddress,
-      aspectRatio: _getAspectRatioValue(context),
-    )));
   }
 
   // --- FOCUS & EXPOSURE ---
@@ -681,14 +915,48 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                     child: SizedBox(
                       width: screenWidth,
                       height: screenWidth * _controller!.value.aspectRatio,
-                      child: LayoutBuilder(
-                        builder: (context, constraints) {
-                          return GestureDetector(
-                            behavior: HitTestBehavior.opaque,
-                            onTapUp: (details) => _onTapFocus(details, constraints),
-                            child: CameraPreview(_controller!),
-                          );
-                        },
+                      child: RepaintBoundary(
+                        child: LayoutBuilder(
+                          builder: (context, constraints) {
+                            return GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onScaleStart: (details) {
+                                _baseScale = _currentZoom;
+                              },
+                              onScaleUpdate: (details) async {
+                                if (details.pointerCount > 1) {
+                                  if (_controller == null || !_controller!.value.isInitialized) return;
+                                  final newZoom = (_baseScale * details.scale).clamp(_minAvailableZoom, _maxAvailableZoom);
+                                  if ((newZoom - _currentZoom).abs() > 0.05) {
+                                    _currentZoom = newZoom;
+                                    await _controller!.setZoomLevel(_currentZoom);
+                                    if (mounted) setState(() {});
+                                  }
+                                }
+                              },
+                              onTapUp: (details) => _onTapFocus(details, constraints),
+                              child: Stack(
+                                fit: StackFit.expand,
+                                children: [
+                                  CameraPreview(_controller!),
+                                  if (_showGrid)
+                                    const IgnorePointer(
+                                      child: CustomPaint(
+                                        painter: CameraGridPainter(),
+                                      ),
+                                    ),
+                                  // Shutter curtain blade blink (natural camera optic feedback)
+                                  if (_showShutterCurtain)
+                                    IgnorePointer(
+                                      child: Container(
+                                        color: Colors.black.withValues(alpha: 0.85),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
                       ),
                     ),
                   ),
@@ -714,13 +982,17 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
             top: _overlayAtBottom ? null : 100,
             bottom: _overlayAtBottom ? 160 : null,
             left: 0, right: 0,
-            child: GPSOverlayCard(
-              position: _currentPosition,
-              address: _currentAddress,
-              dateTime: _currentTime,
-              showMap: _showMapInOverlay,
-              textColor: _overlayTextColor,
-              mapStyle: _mapStyle,
+            child: RepaintBoundary(
+              key: _overlayCardKey,
+              child: GPSOverlayCard(
+                position: _currentPosition,
+                address: _currentAddress,
+                dateTime: _currentTimeNotifier.value,
+                timeNotifier: _currentTimeNotifier,
+                showMap: _showMapInOverlay,
+                textColor: _overlayTextColor,
+                mapStyle: _mapStyle,
+              ),
             ),
           ),
 
@@ -755,19 +1027,13 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
           if (_showFocusUI)
             const Positioned(right: 20, bottom: 190, child: Icon(Icons.wb_sunny, color: Colors.yellowAccent, size: 20)),
 
-          // 5. Shutter Flash Effect
-          if (_showShutterFlash)
-            Positioned.fill(
-              child: Container(color: Colors.white.withValues(alpha: 0.85)),
-            ),
-
-          // 6. Top Bar (Wrapped in SafeArea)
+          // 5. Top Bar (Wrapped in SafeArea)
           Positioned(
             top: 0, left: 0, right: 0,
             child: SafeArea(
               bottom: false,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
                 decoration: const BoxDecoration(
                   gradient: LinearGradient(
                     colors: [Colors.black87, Colors.transparent],
@@ -777,61 +1043,125 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                 ),
                 child: Row(
                   children: [
-                    // Brand Badge
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: Colors.black45,
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: Colors.white24),
-                      ),
-                      child: const Row(
-                        children: [
-                          Icon(Icons.gps_fixed, color: Colors.cyanAccent, size: 13),
-                          SizedBox(width: 6),
-                          Text(
-                            "GPSCAM",
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.w900,
-                              fontSize: 12,
-                              letterSpacing: 1.2,
+                    // Brand Badge with live GPS state (Compact & flexible to prevent overflow on startup)
+                    Flexible(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.5),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: Colors.white.withValues(alpha: 0.2), width: 0.8),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.gps_fixed,
+                              color: _currentPosition != null ? Colors.greenAccent : Colors.amberAccent,
+                              size: 13,
                             ),
-                          ),
-                        ],
+                            const SizedBox(width: 5),
+                            Flexible(
+                              child: Text(
+                                _currentPosition != null ? "GPS PRO" : "GPS...",
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w900,
+                                  fontSize: 11,
+                                  letterSpacing: 0.6,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
-                    const Spacer(),
-                    _buildGlassButton(text: _ratioName, onTap: _cycleAspectRatio),
-                    const SizedBox(width: 8),
-                    _buildGlassIcon(
-                      icon: _flashMode == FlashMode.torch ? Icons.flash_on : Icons.flash_off,
-                      isActive: _flashMode == FlashMode.torch,
-                      onTap: _toggleFlash,
-                    ),
-                    const SizedBox(width: 8),
-                    _buildGlassIcon(
-                      icon: Icons.flip_camera_ios,
-                      isActive: false,
-                      onTap: () async {
-                        if (_isSwitchingCamera) return;
-                        HapticFeedback.selectionClick();
-                        setState(() => _isSwitchingCamera = true);
-                        _selectedCameraIndex = (_selectedCameraIndex + 1) % _cameras!.length;
-                        await _initCamera(_cameras![_selectedCameraIndex]);
-                      },
-                    ),
-                    const SizedBox(width: 8),
-                    _buildGlassIcon(
-                      icon: Icons.tune_rounded,
-                      isActive: false,
-                      onTap: _openSettings,
+                    const SizedBox(width: 6),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _buildGlassButton(text: _ratioName, onTap: _cycleAspectRatio),
+                        const SizedBox(width: 4),
+                        _buildGlassIcon(
+                          icon: _showGrid ? Icons.grid_3x3_rounded : Icons.grid_off_rounded,
+                          isActive: _showGrid,
+                          activeColor: Colors.cyanAccent,
+                          onTap: _toggleGrid,
+                        ),
+                        const SizedBox(width: 4),
+                        _buildGlassIcon(
+                          icon: _getFlashIcon(),
+                          isActive: _flashMode != FlashMode.off,
+                          activeColor: Colors.amberAccent,
+                          onTap: _toggleFlash,
+                        ),
+                        const SizedBox(width: 4),
+                        _buildGlassIcon(
+                          icon: Icons.flip_camera_ios_outlined,
+                          isActive: false,
+                          onTap: () async {
+                            if (_isSwitchingCamera) return;
+                            HapticFeedback.selectionClick();
+                            setState(() => _isSwitchingCamera = true);
+                            _selectedCameraIndex = (_selectedCameraIndex + 1) % _cameras!.length;
+                            await _initCamera(_cameras![_selectedCameraIndex]);
+                          },
+                        ),
+                        const SizedBox(width: 4),
+                        _buildGlassIcon(
+                          icon: Icons.tune_rounded,
+                          isActive: false,
+                          onTap: _openSettings,
+                        ),
+                      ],
                     ),
                   ],
                 ),
               ),
             ),
           ),
+
+          // 6. Photo Saved Notification Pill
+          if (_showSavedIndicator)
+            Positioned(
+              top: 75,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.8),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: Colors.greenAccent, width: 1.0),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.4),
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.check_circle_rounded, color: Colors.greenAccent, size: 16),
+                      SizedBox(width: 7),
+                      Text(
+                        "Photo Saved",
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0.3,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
 
           // 7. Bottom Controls (Tactile Pro Layout)
           Positioned(
@@ -843,22 +1173,47 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
-                  // Gallery Button with rounded aesthetic
+                  // Gallery Button with live captured thumbnail (Direct Album Viewer)
                   GestureDetector(
                     onTap: () async {
                       HapticFeedback.lightImpact();
-                      final xfile = await _picker.pickImage(source: ImageSource.gallery);
-                      if (xfile != null) _goToEditor(File(xfile.path));
+                      await Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const AlbumViewerScreen(),
+                        ),
+                      );
+                      _loadLatestThumbnail();
                     },
                     child: Container(
                       width: 52,
                       height: 52,
                       decoration: BoxDecoration(
                         color: Colors.white10,
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: Colors.white24, width: 1.2),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: _lastCapturedThumbnail != null ? Colors.white70 : Colors.white24,
+                          width: 1.5,
+                        ),
+                        boxShadow: [
+                          if (_lastCapturedThumbnail != null)
+                            BoxShadow(
+                              color: Colors.white.withValues(alpha: 0.2),
+                              blurRadius: 6,
+                              spreadRadius: 1,
+                            ),
+                        ],
                       ),
-                      child: const Icon(Icons.photo_library_outlined, color: Colors.white, size: 24),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(14),
+                        child: _lastCapturedThumbnail != null
+                            ? Image.memory(
+                                _lastCapturedThumbnail!,
+                                fit: BoxFit.cover,
+                                gaplessPlayback: true,
+                              )
+                            : const Icon(Icons.photo_library_outlined, color: Colors.white, size: 24),
+                      ),
                     ),
                   ),
                   
@@ -927,21 +1282,78 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        decoration: BoxDecoration(color: Colors.black45, borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.white24)),
-        child: Text(text, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        height: 36,
+        padding: const EdgeInsets.symmetric(horizontal: 9),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.45),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.2), width: 0.8),
+        ),
+        child: Text(
+          text,
+          style: const TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
+            fontSize: 12,
+            letterSpacing: 0.2,
+          ),
+        ),
       ),
     );
   }
 
-  Widget _buildGlassIcon({required IconData icon, required VoidCallback onTap, required bool isActive}) {
+  Widget _buildGlassIcon({
+    required IconData icon,
+    required VoidCallback onTap,
+    required bool isActive,
+    Color? activeColor,
+  }) {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.all(8),
-        decoration: BoxDecoration(color: isActive ? Colors.amber : Colors.black45, shape: BoxShape.circle, border: Border.all(color: Colors.white24)),
-        child: Icon(icon, color: isActive ? Colors.black : Colors.white, size: 20),
+        width: 36,
+        height: 36,
+        decoration: BoxDecoration(
+          color: isActive 
+              ? (activeColor ?? Colors.amberAccent).withValues(alpha: 0.25)
+              : Colors.black.withValues(alpha: 0.45),
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: isActive 
+                ? (activeColor ?? Colors.amberAccent).withValues(alpha: 0.8)
+                : Colors.white.withValues(alpha: 0.2),
+            width: 0.8,
+          ),
+        ),
+        child: Icon(
+          icon,
+          color: isActive ? (activeColor ?? Colors.amberAccent) : Colors.white,
+          size: 18,
+        ),
       ),
     );
   }
+}
+
+class CameraGridPainter extends CustomPainter {
+  const CameraGridPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.28)
+      ..strokeWidth = 0.8;
+
+    final dx = size.width / 3;
+    final dy = size.height / 3;
+
+    canvas.drawLine(Offset(dx, 0), Offset(dx, size.height), paint);
+    canvas.drawLine(Offset(dx * 2, 0), Offset(dx * 2, size.height), paint);
+    canvas.drawLine(Offset(0, dy), Offset(size.width, dy), paint);
+    canvas.drawLine(Offset(0, dy * 2), Offset(size.width, dy * 2), paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

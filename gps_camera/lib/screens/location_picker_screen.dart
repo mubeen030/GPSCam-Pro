@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geocoding/geocoding.dart';
+import '../services/location_service.dart';
 import '../widgets/ad_banner_widget.dart';
 
 class LocationPickerScreen extends StatefulWidget {
@@ -29,7 +30,7 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
   final List<Map<String, dynamic>> _mapLayers = [
     {
       'name': 'Satellite',
-      'url': 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+      'url': 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
       'icon': Icons.satellite_alt_rounded,
     },
     {
@@ -63,9 +64,8 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
 
   Future<void> _fetchLocationName(double lat, double lng) async {
     try {
-      List<Placemark> placemarks = await placemarkFromCoordinates(lat, lng);
-      if (placemarks.isNotEmpty && mounted) {
-        final p = placemarks.first;
+      Placemark? p = await LocationService.instance.getAddressFromLatLng(lat, lng);
+      if (p != null && mounted) {
         final parts = <String>[];
         if (p.name != null && p.name!.trim().isNotEmpty) parts.add(p.name!.trim());
         final streetParts = [p.subThoroughfare, p.thoroughfare]
@@ -183,7 +183,16 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
               TileLayer(
                 urlTemplate: _mapLayers[_currentLayerIndex]['url'],
                 userAgentPackageName: 'com.mubeen.gpscampro',
+                maxZoom: 18,
+                tileDisplay: const TileDisplay.instantaneous(),
               ),
+              if (_mapLayers[_currentLayerIndex]['name'] == 'Satellite')
+                TileLayer(
+                  urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+                  userAgentPackageName: 'com.mubeen.gpscampro',
+                  maxZoom: 18,
+                  tileDisplay: const TileDisplay.instantaneous(),
+                ),
               MarkerLayer(
                 markers: [
                   Marker(

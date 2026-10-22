@@ -3,9 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:screenshot/screenshot.dart';
-import 'package:gal/gal.dart';
 import 'package:share_plus/share_plus.dart'; 
 import 'package:path_provider/path_provider.dart';
+import '../services/album_service.dart';
 import '../widgets/ad_banner_widget.dart';
 import '../widgets/gps_overlay_card.dart';
 
@@ -83,7 +83,8 @@ class _EditorScreenState extends State<EditorScreen> {
     try {
       final path = await _generateImage();
       if (path != null) {
-        await Gal.putImage(path, album: "GPS Camera Pro");
+        final bytes = await File(path).readAsBytes();
+        await AlbumService.instance.savePhoto(bytes);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text("Saved to Gallery!"), backgroundColor: Colors.green),
